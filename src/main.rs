@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt::Display};
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Sexp {
@@ -6,14 +6,32 @@ pub enum Sexp {
     List(Vec<Self>),
 }
 
-#[derive(Clone)]
+impl Display for Sexp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sexp::Atom(s) => write!(f, "{s}"),
+            Sexp::List(list) => {
+                write!(f, "(")?;
+                for (i, el) in list.iter().enumerate() {
+                    write!(f, "{el}")?;
+                    if i < list.len() - 1 {
+                        write!(f, " ")?;
+                    }
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SexpSubstIter<I, F>
 where
     I: Iterator<Item = Sexp>,
     F: Fn() -> I,
 {
     needle: String,
-    iterator_progenitor: F,
+    spawn_iterator: F,
     stack: VecDeque<(Sexp, I)>,
 }
 
@@ -22,11 +40,11 @@ where
     I: Iterator<Item = Sexp>,
     F: Fn() -> I,
 {
-    fn new<S: ToString>(inital_sexp: Sexp, needle: S, iterator_progenitor: F) -> Self {
-        let initial_iter = iterator_progenitor();
+    fn new<S: ToString>(inital_sexp: Sexp, needle: S, spawn_iterator: F) -> Self {
+        let initial_iter = spawn_iterator();
         SexpSubstIter {
             needle: needle.to_string(),
-            iterator_progenitor,
+            spawn_iterator,
             stack: VecDeque::from([(inital_sexp, initial_iter)]),
         }
     }
@@ -44,15 +62,20 @@ where
             // if there is juice left in the iterator
             if let Some(next_item) = mamma_iter.next() {
                 // if we have successfully found a needle
-                if let Some(next_sexp) = mamma_sexp.map_first(&self.needle, &next_item) {
-                    // we want to split off the next one
-                    let new_iter = (self.iterator_progenitor)();
-                    self.stack.push_back((next_sexp, new_iter));
+                if let Some(next_sexp) = mamma_sexp.replace_first(&self.needle, &next_item) {
+                    // there might be more juice in the mamma_iter,
+                    // so push it back on the stack so that we try
+                    // to process it again
+                    self.stack.push_front((mamma_sexp, mamma_iter));
 
-                    self.stack.push_back((mamma_sexp, mamma_iter));
+                    // we want to split off the next one
+                    let new_iter = (self.spawn_iterator)();
+                    self.stack.push_front((next_sexp, new_iter));
 
                     self.next()
                 } else {
+                    // otherwise (no needle), then we have a complete sexp
+                    // we can simply return it
                     Some(mamma_sexp)
                 }
             } else {
@@ -65,44 +88,24 @@ where
 }
 
 impl Sexp {
-    #[allow(unused)]
-    fn find_all(&mut self, needle: &str) -> Vec<&mut Self> {
+    fn first(&mut self, needle: &str) -> Option<&mut Self> {
         match self {
-            Sexp::Atom(s) if needle == s => vec![self],
-            Sexp::Atom(_) => vec![],
-            Sexp::List(list) => list
-                .into_iter()
-                .map(|v| v.find_all(needle))
-                .flatten()
-                .collect(),
+            Sexp::Atom(a) if a == needle => Some(self),
+            Sexp::Atom(_) => None,
+            Sexp::List(list) => list.into_iter().find_map(|s| s.first(needle)),
         }
     }
 
-    fn map_first_help(&self, needle: &str, new: &Sexp) -> (Self, bool) {
-        match self {
-            Sexp::Atom(s) if needle == s => (new.clone(), true),
-            Sexp::Atom(_) => (self.clone(), false),
-            Sexp::List(list) => {
-                let (inner, success) =
-                    list.into_iter()
-                        .fold((vec![], false), |(mut acc, success), el| {
-                            if !success {
-                                let (res, success) = el.map_first_help(needle, new);
-                                acc.push(res);
-                                (acc, success)
-                            } else {
-                                acc.push(el.clone());
-                                (acc, success)
-                            }
-                        });
-                (Sexp::List(inner), success)
-            }
+    fn replace_first(&self, needle: &str, new: &Sexp) -> Option<Self> {
+        // let (res, success) = self.replace_first_help(needle, new);
+        // success.then(|| res)
+        let mut copy = self.clone();
+        if let Some(ptr) = copy.first(needle) {
+            *ptr = new.clone();
+            Some(copy)
+        } else {
+            None
         }
-    }
-
-    fn map_first(&self, needle: &str, new: &Sexp) -> Option<Self> {
-        let (res, success) = self.map_first_help(needle, new);
-        success.then(|| res)
     }
 }
 
@@ -155,6 +158,6 @@ fn main() {
     let wkld = Workload::Set(vec![expr]).plug("A", v).plug("B", v0);
 
     for v in wkld {
-        println!("{v:?}");
+        println!("recv: {v}");
     }
 }
